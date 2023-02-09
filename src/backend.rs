@@ -12,6 +12,9 @@ use crate::{ReadBuffer, WriteBuffer};
 #[cfg(target_os = "macos")]
 mod macos;
 
+#[cfg(target_os = "windows")]
+mod windows;
+
 /// Trait that collects methods provided by backend USB-device information.
 pub trait BackendDevice: std::fmt::Debug + std::marker::Send + std::marker::Sync {
     fn as_mut_any(&mut self) -> &mut dyn Any;
@@ -154,4 +157,10 @@ pub trait Backend: std::fmt::Debug + std::marker::Send + std::marker::Sync {
 #[cfg(target_os = "macos")]
 pub fn create_default_backend() -> UsbResult<Arc<dyn Backend>> {
     Ok(Arc::new(macos::MacOsBackend::new()?))
+}
+
+/// Creates a default backend implementation for Windows machines.
+#[cfg(target_os = "windows")]
+pub fn create_default_backend() -> UsbResult<Arc<dyn Backend>> {
+    Ok(Arc::new(windows::usbdk::UsbDkBackend::new()?))
 }

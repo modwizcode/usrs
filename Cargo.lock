@@ -480,6 +480,7 @@ dependencies = [
  "io-kit-sys",
  "log",
  "smol",
+ "winapi",
 ]
 
 [[package]]
