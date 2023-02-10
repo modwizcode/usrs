@@ -1,8 +1,8 @@
 //! Interfaces for communicating with the UsbDk kernel driver.
 
-use std::{ffi::OsStr, iter, os::windows::prelude::*};
+use std::{ffi::{OsStr, c_void}, iter, os::windows::prelude::*, mem::MaybeUninit};
 
-use winapi::{um::{fileapi::{CreateFileW, OPEN_EXISTING}, winnt::{GENERIC_READ, GENERIC_WRITE, FILE_ATTRIBUTE_NORMAL, HANDLE}, winbase::FILE_FLAG_OVERLAPPED, errhandlingapi::GetLastError, handleapi::{INVALID_HANDLE_VALUE, CloseHandle}, ioapiset::DeviceIoControl}, ctypes::c_void};
+use winapi::um::{fileapi::{CreateFileW, OPEN_EXISTING}, winnt::{GENERIC_READ, GENERIC_WRITE, FILE_ATTRIBUTE_NORMAL, HANDLE}, winbase::FILE_FLAG_OVERLAPPED, errhandlingapi::GetLastError, handleapi::{INVALID_HANDLE_VALUE, CloseHandle}, ioapiset::DeviceIoControl};
 
 use crate::{UsbResult, Error};
 
@@ -37,37 +37,72 @@ impl DriverHandle {
         self.handle == INVALID_HANDLE_VALUE
     }
 
-    /// Helper for submitting ioctl requests.
-    /// FIXME(Irides): This isn't a very Rust-y interface, it's just temporary for testing
-    /// This doesn't require `&mut` access, thus it's extra unsafe
-    pub unsafe fn ioctl(&self, code: u32, in_buf: Option<&mut [u8]>, out_buf: Option<&mut [u8]>) -> UsbResult<u32> {
-        // How many bytes were actually written to out_buf.
-        let mut bytes_written: u32 = 0;
+    /// Temporary helper for submitting typed buffer ioctls.
+    /// TODO: This should be moved to a macro helper.
+    pub unsafe fn ioctl_typed_buf<T: Sized>(&self, code: u32, out: &mut [MaybeUninit<T>], in_ptr: *mut c_void, in_len: u32) -> UsbResult<()> {
+        // This is the size of the buffer for output; expect exactly this much data.
+        let expected_size: u32 = (std::mem::size_of::<T>() * out.len()).try_into().unwrap();
+        // The actual number of bytes returned from the ioctl; must match expected_size after ioctl.
+        let mut actual_size: u32 = 0;
 
-        // Gods this is a cursed and terrible way of doing this...
-        let in_len = in_buf.as_ref().map_or(0, |slice| slice.len());
-        let in_ptr = in_buf.map_or(std::ptr::null_mut(), |slice| slice.as_mut_ptr());
-
-        let out_len = out_buf.as_ref().map_or(0, |slice| slice.len());
-        let out_ptr = out_buf.map_or(std::ptr::null_mut(), |slice| slice.as_mut_ptr());
-
-        // Issue the request...
+        // Issue the operation...
         let result = DeviceIoControl(
             self.handle,
             code,
-            in_ptr.cast::<c_void>(),
-            in_len as u32,
-            out_ptr.cast::<c_void>(),
-            out_len as u32,
-            &mut bytes_written as *mut u32,
+            in_ptr,
+            in_len,
+            out.as_mut_ptr().cast(),
+            expected_size,
+            &mut actual_size,
             std::ptr::null_mut()
         );
 
+        // Non-zero result indicates success.
         if result == 0 {
             return Err(Error::OsError(GetLastError().into()));
         }
 
-        Ok(bytes_written)
+        // Check post-conditions, size driver returned must be same as size of type.
+        assert_eq!(expected_size, actual_size, "ioctl {:#x} returned {} bytes, expected {}",
+            code, actual_size, expected_size);
+
+        Ok(())
+    }
+
+    /// Temporary helper for submitting typed ioctls.
+    /// TODO: This should be moved to a macro helper used to define ioctl functions for each of the
+    /// relevant types.
+    pub unsafe fn ioctl_typed<T: Sized>(&self, code: u32, in_ptr: *mut c_void, in_len: u32) -> UsbResult<T> {
+        // This is the of the type we expect the ioctl to provide.
+        let expected_size: u32 = std::mem::size_of::<T>().try_into().unwrap();
+        let mut out: MaybeUninit<T> = MaybeUninit::uninit();
+
+        // The actual number of bytes returned from the ioctl, we panic if this doesn't match
+        // expected_size.
+        let mut actual_size: u32 = 0;
+
+        // Issue the operation...
+        let result = DeviceIoControl(
+            self.handle,
+            code,
+            in_ptr,
+            in_len,
+            out.as_mut_ptr().cast(),
+            expected_size,
+            &mut actual_size,
+            std::ptr::null_mut()
+        );
+
+        // Non-zero result indicates success.
+        if result == 0 {
+            return Err(Error::OsError(GetLastError().into()));
+        }
+
+        // Check post-conditions, size driver returned must be same as size of type.
+        assert_eq!(expected_size, actual_size, "ioctl {:#x} returned {} bytes, expected {}",
+            code, actual_size, expected_size);
+
+        Ok(out.assume_init())
     }
 }
 

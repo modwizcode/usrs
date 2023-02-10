@@ -2,8 +2,6 @@
 //!
 //! Definitions are derrived from `devioctl.h` from the Windows SDK.
 
-use winapi::shared::{ntdef::{UCHAR, USHORT, WCHAR}, basetsd::ULONG64};
-
 /// Takes a device_type, function, method, and access
 ///
 /// This is equivilant to the `CTL_CODE()` macro in `devioctl.h`.
@@ -56,41 +54,3 @@ macro_rules! usbdk_readwrite {
 
 usbdk_read!(USBDK_COUNT_DEVICES, 0x851);
 usbdk_read!(USBDK_ENUM_DEVICES,  0x852);
-
-// Data structures returned and used by ioctls.
-// TODO(Irides): Clean up this mess, like everything else...
-#[repr(C, packed)]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct USB_DEVICE_DESCRIPTOR {
-    pub(crate) bLength: UCHAR,
-    pub(crate) bDescriptorType: UCHAR,
-    pub(crate) bcdUSB: USHORT,
-    pub(crate) bDeviceClass: UCHAR,
-    pub(crate) bDeviceSubClass: UCHAR,
-    pub(crate) bDeviceProtocol: UCHAR,
-    pub(crate) bMaxPacketSize0: UCHAR,
-    pub(crate) idVendor: USHORT,
-    pub(crate) idProduct: USHORT,
-    pub(crate) bcdDevice: USHORT,
-    pub(crate) iManufacturer: UCHAR,
-    pub(crate) iProduct: UCHAR,
-    pub(crate) iSerialNumber: UCHAR,
-    pub(crate) bNumConfigurations: UCHAR
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct DEVICE_ID {
-    pub(crate) device_id: [WCHAR; 200],
-    pub(crate) instance_id: [WCHAR; 200]
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct DEVICE_INFO {
-    pub(crate) ID: DEVICE_ID,
-    pub(crate) FilterID: ULONG64,
-    pub(crate) Port: ULONG64,
-    pub(crate) Speed: ULONG64,
-    pub(crate) DeviceDescriptor: USB_DEVICE_DESCRIPTOR
-}
