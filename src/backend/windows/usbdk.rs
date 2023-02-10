@@ -1,16 +1,24 @@
 //! Core, low-level functionality for UsbDk.
 
-use std::{mem::MaybeUninit, ffi::OsString, os::windows::prelude::OsStringExt};
+#![allow(dead_code, unused)]
 
 use log::{trace, debug};
 
-use crate::{UsbResult, backend::{Backend, BackendDevice}, DeviceInformation, device::Device};
+use crate::{
+    UsbResult,
+    backend::{Backend, BackendDevice},
+    device::Device,
+    DeviceInformation,
+};
 
-use self::{driver::{DriverHandle, get_driver_handle}, bindings::USB_DK_DEVICE_INFO};
+use self::{
+    driver::{DriverHandle, get_driver_handle},
+    bindings::USB_DK_DEVICE_INFO,
+    bindings::{IOCTL_USBDK_COUNT_DEVICES, IOCTL_USBDK_ENUM_DEVICES},
+};
 
 mod driver;
 mod enumeration;
-mod ioctl;
 // TODO(Irides): This will be renamed to something like ioctl_c or driver_c when we have brain to
 // regenerate and clean it up.
 mod bindings;
@@ -25,10 +33,10 @@ impl UsbDkBackend {
     pub fn new() -> UsbResult<Self> {
         trace!("Attempting to open a driver handle");
 
-        // TODO(Irides): Remove some of this debug tracing.
-        let driver = get_driver_handle(false);
+        /// FIXME: figure out if it's okay to always open the handle in overlapped mode.
+        let driver = get_driver_handle(true);
         if driver.is_err() {
-            trace!("Encountered error opening driver handle: {}", (driver.as_ref()).unwrap_err())
+            debug!("Encountered error opening driver handle: {}", (driver.as_ref()).unwrap_err())
         }
         let driver = driver?;
 
@@ -44,19 +52,17 @@ impl Backend for UsbDkBackend {
         // driver handle.
         unsafe {
             // Learn how many devices to expect...
-            let mut device_count: u32 = self.driver.ioctl_typed(ioctl::USBDK_COUNT_DEVICES, std::ptr::null_mut(), 0)
+            let device_count: u32 = self.driver.ioctl_read(IOCTL_USBDK_COUNT_DEVICES)
                 .expect("could not read device count");
             debug!("Driver reports {} devices to enumerate", device_count);
 
             // ... enumerate them ...
-            let mut out_buf: Vec<MaybeUninit<USB_DK_DEVICE_INFO>> = vec![MaybeUninit::uninit(); device_count as usize];
-            self.driver.ioctl_typed_buf(ioctl::USBDK_ENUM_DEVICES, &mut out_buf, std::ptr::null_mut(), 0)
+            let driver_devices: Vec<USB_DK_DEVICE_INFO> = self.driver.ioctl_read_vec(IOCTL_USBDK_ENUM_DEVICES, device_count)
                 .expect("could not enumerate devices");
 
             // ... and convert them to our representation of a device.
             let mut output: Vec<DeviceInformation> = Vec::new();
-            for driver_info in out_buf {
-                let driver_info = driver_info.assume_init();
+            for driver_info in driver_devices {
                 let driver_descriptor = driver_info.DeviceDescriptor;
 
                 output.push(DeviceInformation::new(

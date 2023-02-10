@@ -2,7 +2,7 @@
 
 use std::{ffi::{OsStr, c_void}, iter, os::windows::prelude::*, mem::MaybeUninit};
 
-use winapi::um::{fileapi::{CreateFileW, OPEN_EXISTING}, winnt::{GENERIC_READ, GENERIC_WRITE, FILE_ATTRIBUTE_NORMAL, HANDLE}, winbase::FILE_FLAG_OVERLAPPED, errhandlingapi::GetLastError, handleapi::{INVALID_HANDLE_VALUE, CloseHandle}, ioapiset::DeviceIoControl};
+use winapi::um::{fileapi::{CreateFileW, OPEN_EXISTING}, winnt::{GENERIC_READ, GENERIC_WRITE, FILE_ATTRIBUTE_NORMAL, HANDLE}, winbase::FILE_FLAG_OVERLAPPED, errhandlingapi::GetLastError, handleapi::{INVALID_HANDLE_VALUE, CloseHandle}, ioapiset::DeviceIoControl, minwinbase::OVERLAPPED};
 
 use crate::{UsbResult, Error};
 
@@ -13,15 +13,11 @@ pub(crate) struct DriverHandle {
     pub(crate) handle: HANDLE
 }
 
-// DriverHandle represents ownership over the internal driver resource,
-// thus it is Send + Sync, here we share this fact with the compiler.
+// Windows defines IO operations on a `HANDLE` to be thread-safe. Thus our type is *also* thread-safe.
 unsafe impl Send for DriverHandle {}
 unsafe impl Sync for DriverHandle {}
 
-/// FIXME(Irides): This somewhat models the design of the C++ library, it should be refactored into a more rust
-/// friendly design before release
-/// NOTE: Probably want to rename this to OwnedDriver or similar (like `OwnedHandle` which this
-/// subsumes), since it should be clear this is a /moved/ interface.
+/// Owned handle to a kernel driver. Releases the internal handle on drop.
 impl DriverHandle {
     /// Create from the provided [`HANDLE`].
     ///
@@ -37,24 +33,24 @@ impl DriverHandle {
         self.handle == INVALID_HANDLE_VALUE
     }
 
-    /// Temporary helper for submitting typed buffer ioctls.
-    /// TODO: This should be moved to a macro helper.
-    pub unsafe fn ioctl_typed_buf<T: Sized>(&self, code: u32, out: &mut [MaybeUninit<T>], in_ptr: *mut c_void, in_len: u32) -> UsbResult<()> {
-        // This is the size of the buffer for output; expect exactly this much data.
-        let expected_size: u32 = (std::mem::size_of::<T>() * out.len()).try_into().unwrap();
+    /// Internal helper for submitting raw `DeviceIoControl` requests, checking the result for failure.
+    unsafe fn ioctl_raw(&self, ctl_code: u32,
+                        in_ptr: *mut c_void, in_size: u32,
+                        out_ptr: *mut c_void, out_size: u32,
+                        overlapped: *mut OVERLAPPED) -> UsbResult<u32> {
         // The actual number of bytes returned from the ioctl; must match expected_size after ioctl.
         let mut actual_size: u32 = 0;
 
         // Issue the operation...
         let result = DeviceIoControl(
             self.handle,
-            code,
+            ctl_code,
             in_ptr,
-            in_len,
-            out.as_mut_ptr().cast(),
-            expected_size,
+            in_size,
+            out_ptr,
+            out_size,
             &mut actual_size,
-            std::ptr::null_mut()
+            overlapped
         );
 
         // Non-zero result indicates success.
@@ -62,48 +58,65 @@ impl DriverHandle {
             return Err(Error::OsError(GetLastError().into()));
         }
 
-        // Check post-conditions, size driver returned must be same as size of type.
-        assert_eq!(expected_size, actual_size, "ioctl {:#x} returned {} bytes, expected {}",
-            code, actual_size, expected_size);
-
-        Ok(())
+        Ok(actual_size)
     }
 
-    /// Temporary helper for submitting typed ioctls.
-    /// TODO: This should be moved to a macro helper used to define ioctl functions for each of the
-    /// relevant types.
-    pub unsafe fn ioctl_typed<T: Sized>(&self, code: u32, in_ptr: *mut c_void, in_len: u32) -> UsbResult<T> {
-        // This is the of the type we expect the ioctl to provide.
-        let expected_size: u32 = std::mem::size_of::<T>().try_into().unwrap();
+    /// Helper for submitting IOCTLs that simply read a value of the provided type.
+    pub unsafe fn ioctl_read<T>(&self, ctl_code: u32) -> UsbResult<T> {
         let mut out: MaybeUninit<T> = MaybeUninit::uninit();
 
-        // The actual number of bytes returned from the ioctl, we panic if this doesn't match
-        // expected_size.
-        let mut actual_size: u32 = 0;
+        // Safety: Windows only accepts a u32, so types used should never be able to exceed that anyway.
+        let expected_size: u32 = std::mem::size_of::<T>()
+            .try_into()
+            .expect(&format!("internal consistency: expected_size somehow did not fit in a u32"))
+        ;
 
-        // Issue the operation...
-        let result = DeviceIoControl(
-            self.handle,
-            code,
-            in_ptr,
-            in_len,
+        let actual_size = self.ioctl_raw(
+            ctl_code,
+            std::ptr::null_mut(),
+            0,
             out.as_mut_ptr().cast(),
             expected_size,
-            &mut actual_size,
             std::ptr::null_mut()
-        );
-
-        // Non-zero result indicates success.
-        if result == 0 {
-            return Err(Error::OsError(GetLastError().into()));
-        }
+        )?;
 
         // Check post-conditions, size driver returned must be same as size of type.
-        assert_eq!(expected_size, actual_size, "ioctl {:#x} returned {} bytes, expected {}",
-            code, actual_size, expected_size);
+        assert_eq!(expected_size, actual_size, "ioctl ctl_code = {:#x} returned {} bytes, expected {}",
+            ctl_code, actual_size, expected_size);
 
+        // Safety: we've checked that the driver claims to have fully initialized our type.
         Ok(out.assume_init())
     }
+
+    /// Helper for submitting IOCTLs that simply read multiple values of the provided type.
+    pub unsafe fn ioctl_read_vec<T: Copy>(&self, ctl_code: u32, count: u32) -> UsbResult<Vec<T>> {
+        let mut out: Vec<MaybeUninit<T>> = vec![MaybeUninit::uninit(); count as usize];
+
+        // Safety: Windows only accepts a u32, so types used should never be able to exceed that anyway.
+        let expected_size: u32 = (std::mem::size_of::<T>() * count as usize)
+            .try_into()
+            .expect(&format!("internal consistency: expected_size somehow did not fit in a u32"))
+        ;
+
+        let actual_size = self.ioctl_raw(
+            ctl_code,
+            std::ptr::null_mut(),
+            0,
+            out.as_mut_ptr().cast(),
+            expected_size,
+            std::ptr::null_mut()
+        )?;
+
+        // Check post-conditions, size driver returned must be same as size of type.
+        assert_eq!(expected_size, actual_size, "ioctl ctl_code = {:#x} returned {} bytes, expected {}",
+            ctl_code, actual_size, expected_size);
+
+        // Safety: we've checked that the driver claims to have fully initialized our type.
+        // `MaybeUninit<T>` and `T` are defined to have the same representation, so this transmute
+        // is defined to be safe.
+        Ok(std::mem::transmute(out))
+    }
+
 }
 
 /// Close on drop if not invalid.

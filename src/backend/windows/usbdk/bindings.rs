@@ -2,6 +2,21 @@
 //! Types and defintions from the driver headers. This is tweaked bindgen output.
 //! TODO(Irides): We should regenerate this with a few options set before doing the tweaks.
 
+// IOCTL control codes (generated with bindgen hacks).
+pub const IOCTL_USBDK_COUNT_DEVICES: u32 = 3276824900;
+pub const IOCTL_USBDK_ENUM_DEVICES: u32 = 3276824904;
+pub const IOCTL_USBDK_ADD_REDIRECT: u32 = 3276857680;
+pub const IOCTL_USBDK_GET_CONFIG_DESCRIPTOR: u32 = 3276857684;
+pub const IOCTL_USBDK_UPDATE_REG_PARAMETERS: u32 = 3276857696;
+pub const IOCTL_USBDK_ADD_HIDE_RULE: u32 = 3276857688;
+pub const IOCTL_USBDK_CLEAR_HIDE_RULES: u32 = 3276857692;
+pub const IOCTL_USBDK_DEVICE_ABORT_PIPE: u32 = 3276842312;
+pub const IOCTL_USBDK_DEVICE_SET_ALTSETTING: u32 = 3276842316;
+pub const IOCTL_USBDK_DEVICE_RESET_DEVICE: u32 = 3276842320;
+pub const IOCTL_USBDK_DEVICE_RESET_PIPE: u32 = 3276842324;
+pub const IOCTL_USBDK_DEVICE_WRITE_PIPE: u32 = 3276842328;
+pub const IOCTL_USBDK_DEVICE_READ_PIPE: u32 = 3276825948;
+
 pub const MAX_DEVICE_ID_LEN: u32 = 200;
 pub const USBDK_DRIVER_NAME: &[u8; 6usize] = b"UsbDk\0";
 pub const USBDK_DRIVER_FILE_NAME: &[u8; 10usize] = b"UsbDk.sys\0";
